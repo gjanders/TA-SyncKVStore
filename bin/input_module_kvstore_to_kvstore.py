@@ -6,6 +6,8 @@ import sys
 import time
 import datetime
 from six.moves import range
+import requests
+from requests.auth import HTTPBasicAuth
 
 '''
     IMPORTANT
@@ -213,9 +215,11 @@ def collect_events(helper, ew):
         helper.log_error("No user account selected")
         return 1
 
-    srcSplunkService = splunkClient.connect(host=u_splunkserver, port=8089, username=user_account.get('username'), password=user_account.get('password'),owner='nobody',app=u_srcappname)
+    username=user_account.get('username')
+    password=user_account.get('password')
+    srcSplunkService = splunkClient.connect(host=u_splunkserver, port=8089, username=username, password=password,owner='nobody',app=u_srcappname)
 
-    srcKVStoreTable = srcSplunkService.kvstore[u_srccollection].data.query()
+    srcKVStoreTable = srcSplunkService.kvstore[u_srccollection].data.query(limit=0)
 
     destSplunkService = splunkClient.connect(token=u_session_key, owner='nobody', app=u_destappname)
 
@@ -240,10 +244,60 @@ def collect_events(helper, ew):
             destKVStore.postDataToSplunk(postList)
             postList = []
             postList.append(entry)
-
     destKVStore.postDataToSplunk(postList)
 
     destKVStore.waitUntilDone()
+
+    # if the source kvstore is > 10K rows, then we limit=0 doesn't always get you all the rows, it goes until some
+    # unknown limit and then obtaining more involves extra queries, but we don't know the size of the kvstore/collection
+    src_kvstore_length = len(srcKVStoreTable)
+    helper.log_debug("KV Store received {0} rows".format(len(src_kvstore_length)))
+
+    kvstore_limit = 10000
+    if src_kvstore_length > kvstore_limit:
+        # TODO find a nicer way to do this, ask the introspection stats how big the kvstore is
+        auth = HTTPBasicAuth(username, password)
+        url = "https://" + u_splunkserver + ":8089/services/server/introspection/kvstore/collectionstats?output_mode=json&f=data"
+        res = requests.get(url, auth=auth, verify=False)
+        if (res.status_code != requests.codes.ok):
+            helper.log_error("HTTP status code={0} on URL={1} with username={2} result text={3}".format(res.status_code, url, username, res.text))
+        json_res = json.loads(res.text)
+        if 'entry' in json_res and len(json_res['entry'])>0:
+            entry = json_res['entry'][0]
+            if 'content' in entry and 'data' in entry['content']:
+                json_data = entry['content']['data']
+                for a_data in json_data:
+                    # for some reason this is a giant string of text, oh well
+                    start = a_data.find(u_srcappname + "." + u_srccollection)
+                    if start != -1:
+                        slice_start = a_data.find("count", start)
+                        slice_end = a_data.find(",", slice_start+9)
+                        found_count = int(a_data[slice_start+7:slice_end])
+                        helper.log_info("kvstore has {0} total rows, received {2} rows from the first query with limit=0".format(found_count, src_kvstore_length))
+                        break
+
+        # if we have not seen all the rows from the collection we have to keep querying
+        if src_kvstore_length < found_count:
+            skip_number = src_kvstore_length
+            while skip_number < found_count:
+                helper.log_info("kvstore exceeded the code-configured limit of {0}, running a query to remote kvstore and skipping {1} rows".format(kvstore_limit, skip_number))
+                # we could loop just the query portion and do a large post at the end but tha might consume a lot of memory
+                # so per-loop we submit to the destination kvstore and re-query the source if required
+                # TODO repeated code below, could move this into a function
+                kvstore_result = srcSplunkService.kvstore[u_srccollection].data.query(limit=0,skip=skip_number)
+                postList = []
+                helper.log_debug("KV Store received {0} rows".format(len(kvstore_result)))
+                for entry in kvstore_result:
+                    if ((len(json.dumps(postList)) + len(json.dumps(entry))) < _max_content_bytes) and (len(postList) + 1 < _max_content_records):
+                        postList.append(entry)
+                    else:
+                        destKVStore.postDataToSplunk(postList)
+                        postList = []
+                        postList.append(entry)
+                destKVStore.postDataToSplunk(postList)
+
+                destKVStore.waitUntilDone()
+                skip_number = skip_number + len(kvstore_result)
 
     helper.log_info("Modular Input pullkvtokv completed.")
 
