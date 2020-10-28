@@ -251,7 +251,7 @@ def collect_events(helper, ew):
     # if the source kvstore is > 10K rows, then we limit=0 doesn't always get you all the rows, it goes until some
     # unknown limit and then obtaining more involves extra queries, but we don't know the size of the kvstore/collection
     src_kvstore_length = len(srcKVStoreTable)
-    helper.log_debug("KV Store received {0} rows".format(len(src_kvstore_length)))
+    helper.log_debug("KV Store received {0} rows".format(src_kvstore_length))
 
     kvstore_limit = 10000
     if src_kvstore_length > kvstore_limit:
