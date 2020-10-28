@@ -196,7 +196,7 @@ def collect_events(helper, ew):
                         slice_start = a_data.find("count", start)
                         slice_end = a_data.find(",", slice_start+9)
                         found_count = int(a_data[slice_start+7:slice_end])
-                        helper.log_info("kvstore has {0} total rows, received {2} rows from the first query with limit=0".format(found_count, src_kvstore_length))
+                        helper.log_info("kvstore has {0} total rows, received {1} rows from the first query with limit=0".format(found_count, src_kvstore_length))
                         break
 
         # if we have not seen all the rows from the collection we have to keep querying
